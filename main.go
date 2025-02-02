@@ -12,4 +12,5 @@ func main() {
 		fmt.Println(home_err)
 	}
 	fmt.Println(home)
+	// NOTE: IDEA: Command to easily retrieve a file in the recycle bin
 }
