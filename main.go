@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"time"
-	//	"log"
+	"log"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
+	"time"
 
 	//"os/exec"
 	fp "path/filepath"
@@ -37,21 +38,45 @@ func main() {
 
 	fmt.Println(git_branch, " on path ", git_dir)
 
+	fmt.Println("Fetching git files")
 	git_list, ls_err := GetGitTrackedFiles(git_dir, git_branch)
 	CheckExit(ls_err)
 
-	fmt.Println(git_list)
+	fmt.Println("Print git list:")
+	for _, git_file := range git_list {
+		fmt.Println(git_file)
+	}
 	//	fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
 
 	// Stash git tracked files to operate only on non-git files
-	//stash_err := Stash(git_dir)
+	//stash_err := GitStash(git_dir)
 	//CheckExit(stash_err)
 
 	dir_contents, walk_err := GetAllDirContents(git_dir)
 	CheckExit(walk_err)
-	for _, file_name := range dir_contents {
+
+	exemption_path := fp.Join(git_dir, ".gitrefresh")
+	exempt_files, exempt_dirs, exempt_err := GetRefreshExemptions(exemption_path)
+	CheckExit(exempt_err)
+	fmt.Println("Print exempt files")
+	for _, name := range exempt_files {
+		fmt.Println(name)
+	}
+	fmt.Println("Print exempt dirs")
+	for _, name := range exempt_dirs {
+		fmt.Println(name)
+	}
+
+	fmt.Println("Calculating deletion list")
+	delete_list, get_deletes_err := GetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
+	CheckExit(get_deletes_err)
+
+	delete_list_check, _ := SaferGetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
+	fmt.Println("Correctness check: ", slices.Equal(delete_list, delete_list_check))
+	for _, file_name := range delete_list {
 		fmt.Println(file_name)
 	}
+
 }
 
 // Idempotent way of setting up the recycling directory if it does not exist.
@@ -90,11 +115,19 @@ func GetGitTrackedFiles(git_dir, git_branch string) ([]string, error) {
 	git_ls.Dir = git_dir
 	raw_out, ls_err := git_ls.Output()
 	git_tracked_files := strings.Split(string(raw_out), "\n")
-	return git_tracked_files, ls_err
+	var git_list []string
+	for _, file_name := range git_tracked_files {
+		abs_path, abs_err := fp.Abs(file_name)
+		if abs_err != nil {
+			return git_list, abs_err
+		}
+		git_list = append(git_list, abs_path)
+	}
+	return git_list, ls_err
 }
 
 // Stash changes to git-tracked files
-func Stash(git_dir string) error {
+func GitStash(git_dir string) error {
 	stash_msg := fmt.Sprintf(
 		"git refresh - stashing current edits to git-tracked files - %s",
 		time.Now().Format("2006-01-02 15:04:05"),
@@ -113,6 +146,7 @@ func CheckExit(err error) {
 	}
 }
 
+// Returns absolute paths to all files in directory
 func GetAllDirContents(dir string) ([]string, error) {
 	var out_list []string
 	var walk_closure fs.WalkDirFunc
@@ -122,7 +156,11 @@ func GetAllDirContents(dir string) ([]string, error) {
 			return err
 		}
 		if !info.IsDir() {
-			out_list = append(out_list, path)
+			abs_path, abs_err := fp.Abs(path)
+			if abs_err != nil {
+				return abs_err
+			}
+			out_list = append(out_list, abs_path)
 		}
 		return nil
 	}
@@ -135,13 +173,6 @@ func GetAllDirContents(dir string) ([]string, error) {
 }
 
 func GetDeletionList(all_files, git_files, exempt_files, exempt_dirs []string) ([]string, error) {
-	//           A          B          C
-	// mA = min(A) = A-B-C where mA is a non-negative integer
-	// time cost to check if deletion files in either git files or exempt files list (which we know they are not):
-	// mA*(B + C) = O(mA*B) + O(mA*C)
-	// time cost to check if first we hash the git files and exempt files list
-	// c1*(B + C) [time-cost to create a hash map from both lists combined] + mA*c2 (mA many constant-time checks if element is in hash map) = O(B) + O(C) + O(mA)
-
 	// Setup filtering set
 	var delete_files []string
 	keep_files := make(map[string]bool)
@@ -149,7 +180,6 @@ func GetDeletionList(all_files, git_files, exempt_files, exempt_dirs []string) (
 	for _, i := range git_files {
 		keep_files[i] = true
 	}
-
 	for _, j := range exempt_files {
 		keep_files[j] = true
 	}
@@ -159,21 +189,110 @@ func GetDeletionList(all_files, git_files, exempt_files, exempt_dirs []string) (
 
 	for _, file_name := range all_files {
 		_, keep := keep_files[file_name]
-		exempt := keep
+		if keep {
+			continue
+		}
+
+		in_exempt_dir := false
 		for _, dir := range exempt_dirs {
 			rel_path, rel_err := fp.Rel(dir, file_name)
 			if rel_err != nil {
 				return delete_files, rel_err
 			}
-			exempt = exempt || !strings.HasPrefix(rel_path, ".."+string(fp.Separator))
+			in_exempt_dir = in_exempt_dir || !strings.HasPrefix(rel_path, ".."+string(fp.Separator))
 		}
-		if exempt {
-			delete_files = append(delete_files, file_name)
+		if in_exempt_dir {
+			continue
+		}
+		delete_files = append(delete_files, file_name)
+	}
+	return delete_files, nil
+
+}
+
+func SaferGetDeletionList(all_files, git_files, exempt_files, exempt_dirs []string) ([]string, error) {
+	var delete_files []string
+
+	for _, file := range all_files {
+		if slices.Contains(git_files, file) {
+			continue
+		}
+		if slices.Contains(exempt_files, file) {
+			continue
+		}
+		in_exempt_dir := false
+		for _, dir := range exempt_dirs {
+			rel_path, rel_err := fp.Rel(dir, file)
+			if rel_err != nil {
+				return delete_files, rel_err
+			}
+			in_exempt_dir = in_exempt_dir || !strings.HasPrefix(rel_path, ".."+string(fp.Separator))
+		}
+		if in_exempt_dir {
+			continue
+		}
+		delete_files = append(delete_files, file)
+	}
+
+	return delete_files, nil
+}
+
+// Given .gitrefresh path, returns
+// exempt files list, exempt directories list, and a (nil) error
+// All file paths in both lists are absolute
+func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
+	// TODO: Include separate logic for exemptions in .gitignore
+	// Currently only implement for separate .git_refresh file
+	var exempt_files []string
+	var exempt_dirs []string
+
+	data, read_err := os.ReadFile(exempts_file)
+	if read_err != nil {
+		log.Println("Error reading exemption file ", exempts_file)
+		return exempt_files, exempt_dirs, read_err
+	}
+	lines := strings.Split(string(data), "\n")
+	lines = append(lines, ".git")
+	var raw_path string
+	for _, line := range lines {
+		// Read Path on each line, clean and remove comments
+		raw_path = ""
+		comment_start := strings.Index(line, "#")
+		if comment_start < 0 {
+			raw_path = line
+		} else {
+			raw_path = line[:comment_start]
+		}
+		trim_path := strings.TrimSpace(raw_path)
+		// Skip all-comment lines or empty lines
+		if len(trim_path) == 0 {
 			continue
 		}
 
+		abs_path, abs_err := fp.Abs(trim_path)
+		if abs_err != nil {
+			log.Println("Error resolving absolute path for ", trim_path)
+			return exempt_files, exempt_dirs, abs_err
+		}
+		pathInfo, path_err := os.Stat(abs_path)
+		if errors.Is(path_err, os.ErrNotExist) {
+			continue
+		} else if path_err != nil {
+			log.Println("Error stating ")
+			log.Println(abs_path)
+			log.Println(" from trimmed ")
+			log.Println("filename:", trim_path, ":endfile:ln:", len(trim_path))
+			return exempt_files, exempt_dirs, path_err
+		}
+		// Add path to dir list if is dir, to file list if is file
+		if pathInfo.IsDir() {
+			exempt_dirs = append(exempt_dirs, abs_path)
+		} else {
+			exempt_files = append(exempt_files, abs_path)
+		}
 	}
-	return delete_files, nil
+
+	return exempt_files, exempt_dirs, nil
 
 }
 
