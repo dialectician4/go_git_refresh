@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -28,7 +29,7 @@ func main() {
 	CheckExit(home_err)
 	CheckExit(cwd_err)
 	// Create recycling directory if it does not exist
-	recycle_dir := fp.Join(home, "git_refresh_rcycl")
+	recycle_dir := fp.Join(home, ".git_refresh_rcycl")
 	recycle_err := recycleSetup(recycle_dir)
 	CheckExit(recycle_err)
 
@@ -49,8 +50,8 @@ func main() {
 	//	fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
 
 	// Stash git tracked files to operate only on non-git files
-	//stash_err := GitStash(git_dir)
-	//CheckExit(stash_err)
+	stash_err := GitStash(git_dir)
+	CheckExit(stash_err)
 
 	dir_contents, walk_err := GetAllDirContents(git_dir)
 	CheckExit(walk_err)
@@ -71,11 +72,19 @@ func main() {
 	delete_list, get_deletes_err := GetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
 	CheckExit(get_deletes_err)
 
-	delete_list_check, _ := SaferGetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
-	fmt.Println("Correctness check: ", slices.Equal(delete_list, delete_list_check))
+	//	delete_list_check, _ := SaferGetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
+	//	fmt.Println("Correctness check: ", slices.Equal(delete_list, delete_list_check))
 	for _, file_name := range delete_list {
 		fmt.Println(file_name)
 	}
+
+	delete_err := DeleteFiles(delete_list, git_dir, recycle_dir)
+	CheckExit(delete_err)
+
+	recycle_bin := fp.Join(recycle_dir, path.Base(git_dir))
+
+	fmt.Println("Operation complete, deleted files moved to ", recycle_bin)
+	os.Exit(0)
 
 }
 
@@ -297,3 +306,25 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 }
 
 // NOTE: At some point should prolly include a check that the directory is git-managed, or just wait for it to be caught in one of the errors?
+
+func DeleteFiles(delete_list []string, cwd, recycle_dir string) error {
+	stemming_path := fp.Dir(cwd)
+	for _, src_path := range delete_list {
+		remainder, stem_err := fp.Rel(stemming_path, src_path)
+		if stem_err != nil {
+			return stem_err
+		}
+		dst_path := fp.Join(recycle_dir, remainder)
+		fmt.Println("Target dir: ", fp.Dir(dst_path), " from path ", dst_path)
+		mkdir_err := os.MkdirAll(fp.Dir(dst_path), 0755)
+		if mkdir_err != nil {
+			return mkdir_err
+		}
+		delete_err := os.Rename(src_path, dst_path)
+		if delete_err != nil {
+			return delete_err
+		}
+	}
+
+	return nil
+}
