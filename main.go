@@ -17,6 +17,9 @@ import (
 )
 
 // NOTE: IDEA: Command to easily retrieve a file in the recycle bin
+//func use_utils() {
+//	GetRefreshArgs()
+//}
 
 // By default - need to implement safe mode execution
 // - anything stored in git gets stashed
@@ -50,8 +53,8 @@ func main() {
 	//	fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
 
 	// Stash git tracked files to operate only on non-git files
-	stash_err := GitStash(git_dir)
-	CheckExit(stash_err)
+	//stash_err := GitStash(git_dir)
+	//CheckExit(stash_err)
 
 	dir_contents, walk_err := GetAllDirContents(git_dir)
 	CheckExit(walk_err)
@@ -82,6 +85,9 @@ func main() {
 	CheckExit(delete_err)
 
 	recycle_bin := fp.Join(recycle_dir, path.Base(git_dir))
+
+	pull_err := GitPull(git_dir)
+	CheckExit(pull_err)
 
 	fmt.Println("Operation complete, deleted files moved to ", recycle_bin)
 	os.Exit(0)
@@ -135,6 +141,8 @@ func GetGitTrackedFiles(git_dir, git_branch string) ([]string, error) {
 	return git_list, ls_err
 }
 
+// TODO: Convert fmt prints to logs
+
 // Stash changes to git-tracked files
 func GitStash(git_dir string) error {
 	stash_msg := fmt.Sprintf(
@@ -143,8 +151,19 @@ func GitStash(git_dir string) error {
 	)
 	fmt.Println(stash_msg)
 	git_stash := exec.Command("git", "stash", "-m", stash_msg)
+	git_stash.Dir = git_dir
 	stash_err := git_stash.Run()
 	return stash_err
+}
+
+func GitPull(git_dir string) error {
+	git_pull := exec.Command("git", "pull")
+	git_pull.Dir = git_dir
+	pull_err := git_pull.Run()
+	if pull_err != nil {
+		fmt.Println("Failure: Error when pulling from git")
+	}
+	return pull_err
 }
 
 // Simple command to Exit program if error is non-nil and print first
