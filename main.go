@@ -21,11 +21,20 @@ import (
 //	GetRefreshArgs()
 //}
 
+func main() {
+	// config, config_error :=GetGitRefreshConfig()
+	// if config_error != nil {
+	// 	// TODO: Log error
+	// 	os.Exit(1)
+	// }
+	GitRefreshMainProcedure()
+}
+
 // By default - need to implement safe mode execution
 // - anything stored in git gets stashed
 // - Anything else immediately into recycling bin (what about collisions if the same project has the same directory name but just exists is nested down 2 different directory paths?)
 // - git pull on current branch
-func main() {
+func GitRefreshMainProcedure() {
 	////// Setup git refresh recycling bin if not already setup
 	home, home_err := os.UserHomeDir()
 	git_dir, cwd_err := os.Getwd()
