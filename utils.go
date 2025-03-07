@@ -191,7 +191,7 @@ func GetCLIArgs() []string {
 
 // TODO: Wrap all up into GetGitRefreshConfig() CLIConfig to get configuration at top level
 // TODO: Replace slice and maps equals checks with reflect.DeepEquals or some equivalent
-func GetGitRefreshConfig() (CLIConfig, error) {
+func GetGitRefreshConfig() (*RefreshCLI, error) {
 	args := GetCLIArgs()
 	program_config := DefaultRefreshCLI()
 	// NOTE: Consider adding -v verbal mode

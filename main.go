@@ -8,12 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	fp "path/filepath"
 	"slices"
 	"strings"
 	"time"
-
-	//"os/exec"
-	fp "path/filepath"
 )
 
 // NOTE: IDEA: Command to easily retrieve a file in the recycle bin
@@ -22,19 +20,123 @@ import (
 //}
 
 func main() {
-	// config, config_error :=GetGitRefreshConfig()
-	// if config_error != nil {
-	// 	// TODO: Log error
-	// 	os.Exit(1)
-	// }
-	GitRefreshMainProcedure()
+	config, config_error := GetGitRefreshConfig()
+	if config_error != nil {
+		// TODO: Log error
+		os.Exit(1)
+	}
+	git := GitRefreshDriver{*config}
+	GitRefreshMainProcedure(&git)
+}
+
+type GitDriver interface {
+	RunGit(command []string) (string, error)
+}
+
+type GitDirDriver struct {
+	GitDir string
+}
+
+func (c *GitDirDriver) RunGit(command []string) (string, error) {
+	git_command := exec.Command(command[0], command[1:]...)
+	git_command.Dir = c.GitDir
+	git_output, git_err := git_command.CombinedOutput()
+	git_std_oe := string(git_output)
+	return git_std_oe, git_err
+}
+
+// Get branch name, returns branch name and error
+// If error is not nil, string will be branch name
+func GetGitBranch(gitter GitDriver) (string, error) {
+	branch_cmd_str := []string{"git", "rev-parse", "--abbrev-ref", "HEAD"}
+	branch_output, branch_err := gitter.RunGit(branch_cmd_str)
+	return branch_output, branch_err
+}
+
+// Retrieve list of all git-stored files with an error in case this operation fails
+func GetGitTrackedFiles(gitter GitDriver, branch string) ([]string, error) {
+	// git_ls := exec.Command("git", "ls-tree", "-r", git_branch, "--name-only")
+	ls_cmd_str := []string{"git", "ls-files"}
+	raw_out, ls_err := gitter.RunGit(ls_cmd_str)
+	if ls_err != nil {
+		return nil, ls_err
+	}
+	git_tracked_files := strings.Split(string(raw_out), "\n")
+	var git_list []string
+	for _, file_name := range git_tracked_files {
+		abs_path, abs_err := fp.Abs(file_name)
+		if abs_err != nil {
+			return git_list, abs_err
+		}
+		git_list = append(git_list, abs_path)
+	}
+	return git_list, ls_err
+}
+
+// TODO: Convert fmt prints to logs
+
+// Stash changes to git-tracked files
+func GitStash(gitter GitDriver) error {
+	stash_msg := fmt.Sprintf(
+		"git refresh - stashing current edits to git-tracked files - %s",
+		time.Now().Format("2006-01-02 15:04:05"),
+	)
+	fmt.Println(stash_msg)
+	stash_cmd_str := []string{"git", "stash", "-m", stash_msg}
+	_, stash_err := gitter.RunGit(stash_cmd_str)
+	return stash_err
+}
+
+func GitRestore(gitter GitDriver) error {
+	restore_cmd_str := []string{"git", "restore", "."}
+	_, restore_err := gitter.RunGit(restore_cmd_str)
+	return restore_err
+}
+
+func GitPull(gitter GitDriver) error {
+	pull_cmd_str := []string{"git", "pull"}
+	_, pull_err := gitter.RunGit(pull_cmd_str)
+	if pull_err != nil {
+		fmt.Println("Failure: Error when pulling from git")
+	}
+	return pull_err
+}
+
+type GitRefreshDriver struct {
+	Config RefreshCLI
+	Git    GitDriver
+}
+
+func CreateGitRefreshDriver(config RefreshCLI) GitRefreshDriver {
+	// NOTE: Validate that path is a real git dir here?
+	git_inst := GitDirDriver{config.Path}
+	return GitRefreshDriver{Config: config, Git: &git_inst}
+}
+
+func (d *GitRefreshDriver) PullAction() error {
+	if d.Config.Pull {
+		return GitPull(d.Git)
+	}
+	return nil
+}
+
+func (d *GitRefreshDriver) DeltaAction() error {
+	switch d.Config.TrackedFilesAction {
+	case "stash":
+		return GitStash(d.Git)
+	case "restore":
+		return GitRestore(d.Git)
+	case "null":
+		return nil
+	}
+	return nil
 }
 
 // By default - need to implement safe mode execution
 // - anything stored in git gets stashed
 // - Anything else immediately into recycling bin (what about collisions if the same project has the same directory name but just exists is nested down 2 different directory paths?)
 // - git pull on current branch
-func GitRefreshMainProcedure() {
+func GitRefreshMainProcedure(git GitDriver) {
 	////// Setup git refresh recycling bin if not already setup
 	home, home_err := os.UserHomeDir()
 	git_dir, cwd_err := os.Getwd()
@@ -45,14 +147,16 @@ func GitRefreshMainProcedure() {
 	recycle_err := recycleSetup(recycle_dir)
 	CheckExit(recycle_err)
 
+	recycle_bin := fp.Join(recycle_dir, path.Base(git_dir))
+
 	////// Retrieve git metadata
-	git_branch, branch_err := GetGitBranch(git_dir)
+	git_branch, branch_err := GetGitBranch(git)
 	CheckExit(branch_err)
 
 	fmt.Println(git_branch, " on path ", git_dir)
 
 	fmt.Println("Fetching git files")
-	git_list, ls_err := GetGitTrackedFiles(git_dir, git_branch)
+	git_list, ls_err := GetGitTrackedFiles(git, git_branch)
 	CheckExit(ls_err)
 
 	fmt.Println("Print git list:")
@@ -71,14 +175,14 @@ func GitRefreshMainProcedure() {
 	exemption_path := fp.Join(git_dir, ".gitrefresh")
 	exempt_files, exempt_dirs, exempt_err := GetRefreshExemptions(exemption_path)
 	CheckExit(exempt_err)
-	fmt.Println("Print exempt files")
-	for _, name := range exempt_files {
-		fmt.Println(name)
-	}
-	fmt.Println("Print exempt dirs")
-	for _, name := range exempt_dirs {
-		fmt.Println(name)
-	}
+	// fmt.Println("Print exempt files")
+	// for _, name := range exempt_files {
+	// 	fmt.Println(name)
+	// }
+	// fmt.Println("Print exempt dirs")
+	// for _, name := range exempt_dirs {
+	// 	fmt.Println(name)
+	// }
 
 	fmt.Println("Calculating deletion list")
 	delete_list, get_deletes_err := GetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
@@ -93,9 +197,7 @@ func GitRefreshMainProcedure() {
 	delete_err := DeleteFiles(delete_list, git_dir, recycle_dir)
 	CheckExit(delete_err)
 
-	recycle_bin := fp.Join(recycle_dir, path.Base(git_dir))
-
-	pull_err := GitPull(git_dir)
+	pull_err := GitPull(git)
 	CheckExit(pull_err)
 
 	fmt.Println("Operation complete, deleted files moved to ", recycle_bin)
@@ -119,60 +221,6 @@ func recycleSetup(recycle_dir string) error {
 		//		}
 	}
 	return recycle_dir_err
-}
-
-// Get branch name, returns branch name and error
-// If error is not nil, string will be branch name
-func GetGitBranch(git_dir string) (string, error) {
-	git_branch := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	git_branch.Dir = git_dir
-	branch_name := ""
-	branch_output, branch_err := git_branch.Output()
-	branch_name = string(branch_output)
-	return branch_name, branch_err
-}
-
-// Retrieve list of all git-stored files with an error in case this operation fails
-func GetGitTrackedFiles(git_dir, git_branch string) ([]string, error) {
-	//git_ls := exec.Command("git", "ls-tree", "-r", git_branch, "--name-only")
-	git_ls := exec.Command("git", "ls-files")
-	git_ls.Dir = git_dir
-	raw_out, ls_err := git_ls.Output()
-	git_tracked_files := strings.Split(string(raw_out), "\n")
-	var git_list []string
-	for _, file_name := range git_tracked_files {
-		abs_path, abs_err := fp.Abs(file_name)
-		if abs_err != nil {
-			return git_list, abs_err
-		}
-		git_list = append(git_list, abs_path)
-	}
-	return git_list, ls_err
-}
-
-// TODO: Convert fmt prints to logs
-
-// Stash changes to git-tracked files
-func GitStash(git_dir string) error {
-	stash_msg := fmt.Sprintf(
-		"git refresh - stashing current edits to git-tracked files - %s",
-		time.Now().Format("2006-01-02 15:04:05"),
-	)
-	fmt.Println(stash_msg)
-	git_stash := exec.Command("git", "stash", "-m", stash_msg)
-	git_stash.Dir = git_dir
-	stash_err := git_stash.Run()
-	return stash_err
-}
-
-func GitPull(git_dir string) error {
-	git_pull := exec.Command("git", "pull")
-	git_pull.Dir = git_dir
-	pull_err := git_pull.Run()
-	if pull_err != nil {
-		fmt.Println("Failure: Error when pulling from git")
-	}
-	return pull_err
 }
 
 // Simple command to Exit program if error is non-nil and print first
