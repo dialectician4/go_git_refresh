@@ -20,23 +20,42 @@ import (
 //}
 
 func main() {
+	////// Get stdout as io writer
+	git_refresh_writer := os.Stdout
+	////// Get configurations for git refresh
 	config, config_error := GetGitRefreshConfig()
 	if config_error != nil {
-		// TODO: Log error
+		fmt.Println(git_refresh_writer, "Error when parsing input to git refresh:\n", config_error)
 		os.Exit(1)
 	}
-	git := GitRefreshDriver{*config}
-	GitRefreshMainProcedure(&git)
+	////// Setup git refresh recycling bin if not already setup
+	home, home_err := os.UserHomeDir()
+	CheckExit(home_err)
+	// Create recycling directory if it does not exist
+	recycle_bin := fp.Join(home, ".git_refresh_rcycl", path.Base(config.Path))
+	recycle_err := recycleSetup(recycle_bin)
+	CheckExit(recycle_err)
+	////// Generate driver for GitRefresh procedure
+	git_refresh_inst := CreateGitRefreshDriver(*config)
+	refresh_err := GitRefreshMainProcedure(git_refresh_inst)
+	if refresh_err != nil {
+		log.Println("git refresh early termination due to the following error:")
+		log.Println(refresh_err)
+		os.Exit(1)
+	}
 }
 
-type GitDriver interface {
+type GitOpsDriver interface {
 	RunGit(command []string) (string, error)
 }
 
+// Struct to encapsulate and standardize git command execution.
 type GitDirDriver struct {
 	GitDir string
 }
 
+// Given a git command, executes command and returns
+// stdout and stderr as a string and any associated error
 func (c *GitDirDriver) RunGit(command []string) (string, error) {
 	git_command := exec.Command(command[0], command[1:]...)
 	git_command.Dir = c.GitDir
@@ -47,14 +66,14 @@ func (c *GitDirDriver) RunGit(command []string) (string, error) {
 
 // Get branch name, returns branch name and error
 // If error is not nil, string will be branch name
-func GetGitBranch(gitter GitDriver) (string, error) {
+func GetGitBranch(gitter GitOpsDriver) (string, error) {
 	branch_cmd_str := []string{"git", "rev-parse", "--abbrev-ref", "HEAD"}
 	branch_output, branch_err := gitter.RunGit(branch_cmd_str)
 	return branch_output, branch_err
 }
 
 // Retrieve list of all git-stored files with an error in case this operation fails
-func GetGitTrackedFiles(gitter GitDriver, branch string) ([]string, error) {
+func GetGitTrackedFiles(gitter GitOpsDriver, branch string) ([]string, error) {
 	// git_ls := exec.Command("git", "ls-tree", "-r", git_branch, "--name-only")
 	ls_cmd_str := []string{"git", "ls-files"}
 	raw_out, ls_err := gitter.RunGit(ls_cmd_str)
@@ -76,7 +95,7 @@ func GetGitTrackedFiles(gitter GitDriver, branch string) ([]string, error) {
 // TODO: Convert fmt prints to logs
 
 // Stash changes to git-tracked files
-func GitStash(gitter GitDriver) error {
+func GitStash(gitter GitOpsDriver) error {
 	stash_msg := fmt.Sprintf(
 		"git refresh - stashing current edits to git-tracked files - %s",
 		time.Now().Format("2006-01-02 15:04:05"),
@@ -87,13 +106,13 @@ func GitStash(gitter GitDriver) error {
 	return stash_err
 }
 
-func GitRestore(gitter GitDriver) error {
+func GitRestore(gitter GitOpsDriver) error {
 	restore_cmd_str := []string{"git", "restore", "."}
 	_, restore_err := gitter.RunGit(restore_cmd_str)
 	return restore_err
 }
 
-func GitPull(gitter GitDriver) error {
+func GitPull(gitter GitOpsDriver) error {
 	pull_cmd_str := []string{"git", "pull"}
 	_, pull_err := gitter.RunGit(pull_cmd_str)
 	if pull_err != nil {
@@ -104,7 +123,7 @@ func GitPull(gitter GitDriver) error {
 
 type GitRefreshDriver struct {
 	Config RefreshCLI
-	Git    GitDriver
+	Git    GitOpsDriver
 }
 
 func CreateGitRefreshDriver(config RefreshCLI) GitRefreshDriver {
@@ -136,27 +155,32 @@ func (d *GitRefreshDriver) DeltaAction() error {
 // - anything stored in git gets stashed
 // - Anything else immediately into recycling bin (what about collisions if the same project has the same directory name but just exists is nested down 2 different directory paths?)
 // - git pull on current branch
-func GitRefreshMainProcedure(git GitDriver) {
+func GitRefreshMainProcedure(git_refresh GitRefreshDriver) error {
 	////// Setup git refresh recycling bin if not already setup
 	home, home_err := os.UserHomeDir()
-	git_dir, cwd_err := os.Getwd()
 	CheckExit(home_err)
-	CheckExit(cwd_err)
 	// Create recycling directory if it does not exist
 	recycle_dir := fp.Join(home, ".git_refresh_rcycl")
 	recycle_err := recycleSetup(recycle_dir)
 	CheckExit(recycle_err)
 
+	git_dir := git_refresh.Config.Path
 	recycle_bin := fp.Join(recycle_dir, path.Base(git_dir))
 
 	////// Retrieve git metadata
-	git_branch, branch_err := GetGitBranch(git)
+	git_branch, branch_err := GetGitBranch(git_refresh.Git)
 	CheckExit(branch_err)
-
 	fmt.Println(git_branch, " on path ", git_dir)
 
+	// Operate on git-tracked files with a delta (non-op, restore, or stash)
+	delta_err := git_refresh.DeltaAction()
+	if delta_err != nil {
+		log.Println("Error during git delta action: ", git_refresh.Config.TrackedFilesAction)
+		return delta_err
+	}
+
 	fmt.Println("Fetching git files")
-	git_list, ls_err := GetGitTrackedFiles(git, git_branch)
+	git_list, ls_err := GetGitTrackedFiles(git_refresh.Git, git_branch)
 	CheckExit(ls_err)
 
 	fmt.Println("Print git list:")
@@ -164,10 +188,6 @@ func GitRefreshMainProcedure(git GitDriver) {
 		fmt.Println(git_file)
 	}
 	//	fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
-
-	// Stash git tracked files to operate only on non-git files
-	//stash_err := GitStash(git_dir)
-	//CheckExit(stash_err)
 
 	dir_contents, walk_err := GetAllDirContents(git_dir)
 	CheckExit(walk_err)
@@ -194,15 +214,18 @@ func GitRefreshMainProcedure(git GitDriver) {
 		fmt.Println(file_name)
 	}
 
+	// TODO: Change to take recycle_bin as input instead of recycle_dir
 	delete_err := DeleteFiles(delete_list, git_dir, recycle_dir)
 	CheckExit(delete_err)
 
-	pull_err := GitPull(git)
-	CheckExit(pull_err)
+	pull_err := git_refresh.PullAction()
+	if pull_err != nil {
+		log.Println("Error during git pull action")
+		return pull_err
+	}
 
-	fmt.Println("Operation complete, deleted files moved to ", recycle_bin)
-	os.Exit(0)
-
+	log.Println("Operation complete, deleted files moved to ", recycle_bin)
+	return nil
 }
 
 // Idempotent way of setting up the recycling directory if it does not exist.
@@ -211,14 +234,9 @@ func recycleSetup(recycle_dir string) error {
 	// Create directory if directory does not exist
 	_, recycle_dir_err := os.Stat(recycle_dir)
 	if errors.Is(recycle_dir_err, os.ErrNotExist) {
+		// NOTE: Is this no-opp return nil if dir already exists?
 		mkdir_err := os.MkdirAll(recycle_dir, 0755)
 		return mkdir_err
-		// Error would propagate properly anyways
-		//		if mkdir_err != nil {
-		//			// Find a way to compose errors
-		//			log.Println("Error while setting up the git_refresh recycle bin: ", mkdir_err)
-		//			// return mkdir_err
-		//		}
 	}
 	return recycle_dir_err
 }
