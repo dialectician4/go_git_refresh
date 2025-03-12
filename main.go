@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -15,34 +16,51 @@ import (
 )
 
 // NOTE: IDEA: Command to easily retrieve a file in the recycle bin
-//func use_utils() {
-//	GetRefreshArgs()
-//}
-
+//
+//	func use_utils() {
+//		GetRefreshArgs()
+//	}
 func main() {
+	os.Exit(GitRefreshMain())
+}
+
+func GitRefreshMain() int {
 	////// Get stdout as io writer
 	git_refresh_writer := os.Stdout
 	////// Get configurations for git refresh
-	config, config_error := GetGitRefreshConfig()
-	if config_error != nil {
-		fmt.Println(git_refresh_writer, "Error when parsing input to git refresh:\n", config_error)
-		os.Exit(1)
+	config, config_err := GetGitRefreshConfig()
+	if config_err != nil {
+		fmt.Fprintln(git_refresh_writer, "Error when parsing input to git refresh:\n", config_err)
+		return 1
 	}
 	////// Setup git refresh recycling bin if not already setup
 	home, home_err := os.UserHomeDir()
-	CheckExit(home_err)
+	if home_err != nil {
+		fmt.Fprintln(git_refresh_writer, "Error when retrieving home directory:\n", home_err)
+		return 1
+	}
 	// Create recycling directory if it does not exist
 	recycle_bin := fp.Join(home, ".git_refresh_rcycl", path.Base(config.Path))
 	recycle_err := recycleSetup(recycle_bin)
-	CheckExit(recycle_err)
-	////// Generate driver for GitRefresh procedure
-	git_refresh_inst := CreateGitRefreshDriver(*config)
-	refresh_err := GitRefreshMainProcedure(git_refresh_inst)
-	if refresh_err != nil {
-		log.Println("git refresh early termination due to the following error:")
-		log.Println(refresh_err)
-		os.Exit(1)
+	if recycle_err != nil {
+		fmt.Fprintln(
+			git_refresh_writer,
+			"Error when setting up recycle bin at ",
+			recycle_bin,
+			":\n",
+			recycle_err,
+		)
+		return 1
 	}
+	////// Generate driver for GitRefresh procedure
+	git_refresh_inst := CreateGitRefreshDriver(*config, git_refresh_writer, recycle_bin)
+	refresh_err := GitRefreshSingleRepo(git_refresh_inst)
+	if refresh_err != nil {
+		fmt.Fprintln(git_refresh_writer, "git refresh early termination due to the following error:", refresh_err)
+		return 1
+	}
+
+	return 0
 }
 
 type GitOpsDriver interface {
@@ -122,14 +140,23 @@ func GitPull(gitter GitOpsDriver) error {
 }
 
 type GitRefreshDriver struct {
-	Config RefreshCLI
-	Git    GitOpsDriver
+	Config     RefreshCLI
+	Git        GitOpsDriver
+	Writer     io.Writer
+	GitDir     string
+	RecycleBin string
 }
 
-func CreateGitRefreshDriver(config RefreshCLI) GitRefreshDriver {
+func CreateGitRefreshDriver(config RefreshCLI, writer io.Writer, recycle string) GitRefreshDriver {
 	// NOTE: Validate that path is a real git dir here?
 	git_inst := GitDirDriver{config.Path}
-	return GitRefreshDriver{Config: config, Git: &git_inst}
+	return GitRefreshDriver{
+		Config:     config,
+		Git:        &git_inst,
+		Writer:     writer,
+		GitDir:     config.Path,
+		RecycleBin: recycle,
+	}
 }
 
 func (d *GitRefreshDriver) PullAction() error {
@@ -155,33 +182,34 @@ func (d *GitRefreshDriver) DeltaAction() error {
 // - anything stored in git gets stashed
 // - Anything else immediately into recycling bin (what about collisions if the same project has the same directory name but just exists is nested down 2 different directory paths?)
 // - git pull on current branch
-func GitRefreshMainProcedure(git_refresh GitRefreshDriver) error {
-	////// Setup git refresh recycling bin if not already setup
-	home, home_err := os.UserHomeDir()
-	CheckExit(home_err)
-	// Create recycling directory if it does not exist
-	recycle_dir := fp.Join(home, ".git_refresh_rcycl")
-	recycle_err := recycleSetup(recycle_dir)
-	CheckExit(recycle_err)
-
-	git_dir := git_refresh.Config.Path
-	recycle_bin := fp.Join(recycle_dir, path.Base(git_dir))
+func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
+	git_dir := git_refresh.GitDir
+	recycle_bin := git_refresh.RecycleBin
 
 	////// Retrieve git metadata
 	git_branch, branch_err := GetGitBranch(git_refresh.Git)
-	CheckExit(branch_err)
-	fmt.Println(git_branch, " on path ", git_dir)
+	if branch_err != nil {
+		return branch_err
+	}
+	// TODO: Add method to git_refresh to include verbosity in the operation
+	fmt.Fprintln(git_refresh.Writer, "Refresh operating on ", git_branch, " on path ", git_dir, "...")
 
 	// Operate on git-tracked files with a delta (non-op, restore, or stash)
 	delta_err := git_refresh.DeltaAction()
 	if delta_err != nil {
-		log.Println("Error during git delta action: ", git_refresh.Config.TrackedFilesAction)
+		fmt.Fprintln(
+			git_refresh.Writer,
+			"Error during git delta action: ",
+			git_refresh.Config.TrackedFilesAction,
+		)
 		return delta_err
 	}
 
-	fmt.Println("Fetching git files")
+	fmt.Fprintln(git_refresh.Writer, "Finding git-tracked files...")
 	git_list, ls_err := GetGitTrackedFiles(git_refresh.Git, git_branch)
-	CheckExit(ls_err)
+	if ls_err != nil {
+		return ls_err
+	}
 
 	fmt.Println("Print git list:")
 	for _, git_file := range git_list {
@@ -190,11 +218,17 @@ func GitRefreshMainProcedure(git_refresh GitRefreshDriver) error {
 	//	fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
 
 	dir_contents, walk_err := GetAllDirContents(git_dir)
-	CheckExit(walk_err)
+	if walk_err != nil {
+		fmt.Fprintln(git_refresh.Writer, "Error when generating list of directory contents.")
+		return walk_err
+	}
 
 	exemption_path := fp.Join(git_dir, ".gitrefresh")
+	fmt.Fprintln(git_refresh.Writer, "Generating git refresh exemption list...")
 	exempt_files, exempt_dirs, exempt_err := GetRefreshExemptions(exemption_path)
-	CheckExit(exempt_err)
+	if exempt_err != nil {
+		return exempt_err
+	}
 	// fmt.Println("Print exempt files")
 	// for _, name := range exempt_files {
 	// 	fmt.Println(name)
@@ -204,9 +238,13 @@ func GitRefreshMainProcedure(git_refresh GitRefreshDriver) error {
 	// 	fmt.Println(name)
 	// }
 
+	// TODO: Remove
 	fmt.Println("Calculating deletion list")
 	delete_list, get_deletes_err := GetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
-	CheckExit(get_deletes_err)
+	if get_deletes_err != nil {
+		fmt.Fprintln(git_refresh.Writer, "Error when determining file deletion list.")
+		return get_deletes_err
+	}
 
 	//	delete_list_check, _ := SaferGetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
 	//	fmt.Println("Correctness check: ", slices.Equal(delete_list, delete_list_check))
@@ -214,17 +252,19 @@ func GitRefreshMainProcedure(git_refresh GitRefreshDriver) error {
 		fmt.Println(file_name)
 	}
 
-	// TODO: Change to take recycle_bin as input instead of recycle_dir
-	delete_err := DeleteFiles(delete_list, git_dir, recycle_dir)
-	CheckExit(delete_err)
+	fmt.Fprintln(git_refresh.Writer, "Moving files to recycling bin...")
+	delete_err := RecycleFiles(delete_list, git_dir, recycle_bin)
+	if delete_err != nil {
+		return delete_err
+	}
 
 	pull_err := git_refresh.PullAction()
 	if pull_err != nil {
-		log.Println("Error during git pull action")
+		fmt.Fprintln(git_refresh.Writer, "Error during git pull action.")
 		return pull_err
 	}
 
-	log.Println("Operation complete, deleted files moved to ", recycle_bin)
+	fmt.Fprintln(git_refresh.Writer, "Operation complete, deleted files moved to ", recycle_bin)
 	return nil
 }
 
@@ -401,7 +441,8 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 
 // NOTE: At some point should prolly include a check that the directory is git-managed, or just wait for it to be caught in one of the errors?
 
-func DeleteFiles(delete_list []string, cwd, recycle_dir string) error {
+func RecycleFiles(delete_list []string, cwd, recycle_dir string) error {
+	recycle_dir = fp.Dir(recycle_dir)
 	stemming_path := fp.Dir(cwd)
 	for _, src_path := range delete_list {
 		remainder, stem_err := fp.Rel(stemming_path, src_path)
