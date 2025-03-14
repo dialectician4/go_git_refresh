@@ -186,6 +186,7 @@ func (c *RefreshCLI) ApplyCLIInputs(noninput_vals []string, interactive_map map[
 
 func GetCLIArgs() []string {
 	args := os.Args[1:]
+	fmt.Println("cli inputs: ", args)
 	return args
 }
 

@@ -27,6 +27,8 @@ func main() {
 func GitRefreshMain() int {
 	////// Get stdout as io writer
 	git_refresh_writer := os.Stdout
+	cli_args := GetCLIArgs()
+	fmt.Println(cli_args)
 	////// Get configurations for git refresh
 	config, config_err := GetGitRefreshConfig()
 	if config_err != nil {
