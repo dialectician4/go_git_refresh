@@ -173,3 +173,21 @@ func TestGetCLIArgs(t *testing.T) {
 		t.Fatalf("Expected differs from args result: R:%v E%v", result, expected)
 	}
 }
+
+func TestGetGitRefreshConfig(t *testing.T) {
+	// Setup os.Args "mocking"
+	originalArgs := os.Args
+	defer func() { os.Args = originalArgs }()
+	mockArgs := []string{"fake-path"}
+	os.Args = mockArgs
+
+	expected := DefaultRefreshCLI()
+	cwd, _ := os.Getwd()
+	expected.Path = cwd
+	result, get_err := GetGitRefreshConfig()
+	if !reflect.DeepEqual(expected, *result) {
+		t.Fatalf("Expected differs from args result: R:%v E%v", result, expected)
+	} else if get_err != nil {
+		t.Fatalf("Unexpected error in default case: %v", get_err)
+	}
+}

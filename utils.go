@@ -103,6 +103,12 @@ func (r *RefreshCLI) FromInteractiveMap(flag_map map[string]string) error {
 				return exempt_err
 			}
 			r.ExemptionsSrc = exempt_val
+		case "path":
+			if len(opt_val) == 0 {
+				r.Path = "."
+			} else {
+				r.Path = opt_val
+			}
 		default:
 			return errors.New(fmt.Sprintln("Flag not recognized: ", opt))
 		}
@@ -199,11 +205,23 @@ func GetGitRefreshConfig() (*RefreshCLI, error) {
 	non_input_opts, interactive_map, parse_error := ParseArgs(args, &program_config)
 	if parse_error != nil {
 		// TODO: Add logging on early returns
+		fmt.Printf("Error formatting %v\n", parse_error)
 		return nil, parse_error
 	}
 	apply_opts_error := (&program_config).ApplyCLIInputs(non_input_opts, interactive_map)
 	if apply_opts_error != nil {
+		fmt.Printf("Error applying: %v\n", apply_opts_error)
+		fmt.Println("noninputs: ", non_input_opts)
+		fmt.Printf("interactive map: %v\n", interactive_map)
 		return nil, apply_opts_error
+	}
+
+	if program_config.Path == "." {
+		var cwd_err error
+		program_config.Path, cwd_err = os.Getwd()
+		if cwd_err != nil {
+			return nil, cwd_err
+		}
 	}
 	return &program_config, nil
 

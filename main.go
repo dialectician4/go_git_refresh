@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path"
 	fp "path/filepath"
 	"slices"
 	"strings"
@@ -42,7 +41,9 @@ func GitRefreshMain() int {
 		return 1
 	}
 	// Create recycling directory if it does not exist
-	recycle_bin := fp.Join(home, ".git_refresh_rcycl", path.Base(config.Path))
+	fmt.Println("Path: ", config.Path, ", Base of Path: ", fp.Base(config.Path))
+	fmt.Println("test base: ", fp.Base(`\projects\go\go_git_refresh`))
+	recycle_bin := fp.Join(home, ".git_refresh_rcycl", fp.Base(config.Path))
 	recycle_err := recycleSetup(recycle_bin)
 	if recycle_err != nil {
 		fmt.Fprintln(
