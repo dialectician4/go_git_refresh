@@ -90,15 +90,15 @@ func TestFromInteractiveMap(t *testing.T) {
 func TestParseArgs(t *testing.T) {
 	default_config := DefaultRefreshCLI()
 	successful_input := []string{
-		"-p", "--no-pull", "--opt1=val1", "-o=val2", "--opt3", "val3", "/home/path", "-o4", "--val4",
+		"-p", "--no-pull", "--opt1=val1", "-o=val2", "--opt3", "val3", "/home/path", "-o4", "val4",
 	}
 	expected_1 := []string{"-p", "--no-pull"}
 	expected_2 := map[string]string{
 		"--opt1": "val1",
 		"-o":     "val2",
 		"--opt3": "val3",
-		"path":   "/home/path",
-		"-o4":    "--val4",
+		"--path": "/home/path",
+		"-o4":    "val4",
 	}
 	var expected_3 error = nil
 	result_1, result_2, result_3 := ParseArgs(successful_input, &default_config)

@@ -103,7 +103,7 @@ func (r *RefreshCLI) FromInteractiveMap(flag_map map[string]string) error {
 				return exempt_err
 			}
 			r.ExemptionsSrc = exempt_val
-		case "path":
+		case "--path":
 			if len(opt_val) == 0 {
 				r.Path = "."
 			} else {
@@ -120,10 +120,10 @@ func ParseArgs(args []string, config CLIConfig) ([]string, map[string]string, er
 	noninput_flags := config.ToNonInputOptions()
 	noninput_vals := []string{}
 	//interactive_flags := (*config).ToInteractiveOptions()
-	interactive_map := map[string]string{"path": ""}
+	interactive_map := map[string]string{"--path": ""}
 	remainders := []string{}
 
-	// Take flags noot taking inputs and extract
+	// Take flags not taking inputs and extract
 	for _, arg := range args {
 		if slices.Contains(noninput_flags, arg) {
 			noninput_vals = append(noninput_vals, arg)
@@ -144,36 +144,87 @@ func ParseArgs(args []string, config CLIConfig) ([]string, map[string]string, er
 			split_remainders = append(split_remainders, arg)
 		}
 	}
+	fmt.Println("split remainders: ", split_remainders)
 
-	// Now apply unified sliding window method for reading input pairs
-	used_options := []string{}
-	fmt.Println(split_remainders)
-	for i := 0; i < len(split_remainders)-1; i++ {
-		if strings.HasPrefix(split_remainders[i], "-") &&
-			!slices.Contains(used_options, split_remainders[i+1]) &&
-			!slices.Contains(used_options, split_remainders[i]) {
-			interactive_map[split_remainders[i]] = split_remainders[i+1]
-			used_options = append(used_options, split_remainders[i], split_remainders[i+1])
-		}
-	}
-
-	// In this case, exactly 1 should be unused (the path value)
-	if len(split_remainders) == len(used_options)+1 {
-		for _, val := range split_remainders {
-			if !slices.Contains(used_options, val) {
-				interactive_map["path"] = val
-				break
-			}
-		}
-		path := interactive_map["path"]
-		if len(path) <= 0 {
-			return nil, nil, errors.New(fmt.Sprintf("Issue finding unambigious path term in subset %v of cli args %v\n", split_remainders, args))
-		}
-	} else if (len(split_remainders) > len(used_options)+1) || (len(split_remainders) < len(used_options)) {
-		return nil, nil, errors.New(fmt.Sprintf("Issue finding unambigious path term in subset %v of cli args %v\n", split_remainders, args))
+	interactive_map, interact_parse_err := ParseInteractiveOptionsWPath(split_remainders, interactive_map)
+	if interact_parse_err != nil {
+		return nil, nil, fmt.Errorf("Error when parsing options w/ values: %v", interact_parse_err)
 	}
 
 	return noninput_vals, interactive_map, nil
+}
+
+func ParseInteractiveOptionsWPath(args []string, opt_map map[string]string) (map[string]string, error) {
+	args_len := len(args)
+	if args_len == 0 {
+		return opt_map, nil
+	}
+	// If args are odd
+	if args_len%2 == 1 {
+		dashed, undashed := DashedVsUndashed(args)
+		if undashed != dashed+1 {
+			return nil, fmt.Errorf(
+				"Found %v dashed and %v undashed args, undashed should be 0 or 1 more",
+				dashed,
+				undashed,
+			)
+		}
+		new_arr := []string{}
+		dash_state := true
+		for _, elt := range args {
+			if (dash_state && strings.HasPrefix(elt, "-")) || (!dash_state && !strings.HasPrefix(elt, "-")) {
+				new_arr = append(new_arr, elt)
+				dash_state = !dash_state
+			} else if dash_state && !strings.HasPrefix(elt, "-") {
+				new_arr = append(new_arr, "--path", elt)
+			} else {
+				return nil, errors.New("While parsing args, found option (- prefix) when expecting value")
+			}
+		}
+		args = new_arr
+	}
+	dash_check, undashed_check := DashedVsUndashed(args)
+	if dash_check != undashed_check {
+		return nil, fmt.Errorf("Expected one value per opt, found %v opts and %v values", dash_check, undashed_check)
+	}
+	if !AlternatingDashes(args) {
+		return nil, fmt.Errorf("Args not provided in option-value pairs")
+	}
+	current_opt := ""
+	for _, elt := range args {
+		if strings.HasPrefix(elt, "-") {
+			current_opt = elt
+		} else {
+			opt_map[current_opt] = elt
+			current_opt = ""
+		}
+	}
+	return opt_map, nil
+}
+
+func DashedVsUndashed(strs []string) (int, int) {
+	dashed := 0
+	undashed := 0
+	for _, elt := range strs {
+		if strings.HasPrefix(elt, "-") {
+			dashed += 1
+		} else {
+			undashed += 1
+		}
+	}
+	return dashed, undashed
+}
+
+func AlternatingDashes(strs []string) bool {
+	dashed := true
+	for _, elt := range strs {
+		if (dashed && strings.HasPrefix(elt, "-")) || (!dashed && !strings.HasPrefix(elt, "-")) {
+			dashed = !dashed
+		} else {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *RefreshCLI) ApplyCLIInputs(noninput_vals []string, interactive_map map[string]string) error {
@@ -205,7 +256,6 @@ func GetGitRefreshConfig() (*RefreshCLI, error) {
 	non_input_opts, interactive_map, parse_error := ParseArgs(args, &program_config)
 	if parse_error != nil {
 		// TODO: Add logging on early returns
-		fmt.Printf("Error formatting %v\n", parse_error)
 		return nil, parse_error
 	}
 	apply_opts_error := (&program_config).ApplyCLIInputs(non_input_opts, interactive_map)
