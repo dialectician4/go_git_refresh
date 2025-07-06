@@ -1,0 +1,14 @@
+version: "2"
+
+linters:
+  default: standard
+
+  enable:
+    - nilerr
+    - nilnesserr
+    - nilnil
+    - gochecksumtype
+    - gocritic
+    - exhaustive
+    - exhaustruct
+    - decorder
