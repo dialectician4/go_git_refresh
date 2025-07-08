@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func main() {
+func main2() {
 	LoggerTest()
 }
 
@@ -61,11 +61,7 @@ func CreateChannelLogger(sender chan<- string) io.Writer {
 }
 
 func LogChannel(writer io.Writer, rcv <-chan string) {
-	// bufstdout := bufio.NewWriter(writer)
 	for log := range rcv {
-		// bufstdout.Write(log)
-		// bufstdout.Flush()
 		writer.Write([]byte(log))
-		// time.Sleep(10 * time.Millisecond)
 	}
 }

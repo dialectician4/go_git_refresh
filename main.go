@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	// "io"
 	"io"
 	"io/fs"
 	"log"
@@ -10,20 +11,29 @@ import (
 	fp "path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // NOTE: IDEA: Command to easily retrieve a file in the recycle bin
-//
-//	func use_utils() {
-//		GetRefreshArgs()
-//	}
 func main() {
-	os.Exit(GitRefreshMain())
+	logc := make(chan string, 10)
+	write_chan := CreateChannelWriter(logc)
+	var wg sync.WaitGroup
+	go func() {
+		wg.Add(1)
+		defer wg.Done()
+		LogRoutine(os.Stdout, logc)
+	}()
+
+	exit_code := GitRefreshMain(write_chan)
+	close(logc)
+	wg.Wait()
+	os.Exit(exit_code)
 }
 
-func GitRefreshMain() int {
+func GitRefreshMain(logger io.Writer) int {
 	////// Get stdout as io writer
-	git_refresh_writer := os.Stdout
+	git_refresh_writer := logger
 	cli_args := GetCLIArgs()
 	fmt.Println(cli_args)
 	////// Get configurations for git refresh
@@ -42,17 +52,17 @@ func GitRefreshMain() int {
 	fmt.Println("Path: ", config.Path, ", Base of Path: ", fp.Base(config.Path))
 	fmt.Println("test base: ", fp.Base(`\projects\go\go_git_refresh`))
 	recycle_bin := fp.Join(home, ".git_refresh_rcycl", fp.Base(config.Path))
-	recycle_err := recycleSetup(recycle_bin)
-	if recycle_err != nil {
-		fmt.Fprintln(
-			git_refresh_writer,
-			"Error when setting up recycle bin at ",
-			recycle_bin,
-			":\n",
-			recycle_err,
-		)
-		return 1
-	}
+	// recycle_err := recycleSetup(recycle_bin)
+	// if recycle_err != nil {
+	// 	fmt.Fprintln(
+	// 		git_refresh_writer,
+	// 		"Error when setting up recycle bin at ",
+	// 		recycle_bin,
+	// 		":\n",
+	// 		recycle_err,
+	// 	)
+	// 	return 1
+	// }
 	////// Generate driver for GitRefresh procedure
 	git_refresh_inst := CreateGitRefreshDriver(*config, git_refresh_writer, recycle_bin)
 	refresh_err := GitRefreshSingleRepo(git_refresh_inst)
@@ -235,9 +245,13 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 
 }
 
-// NOTE: At some point should prolly include a check that the directory is git-managed, or just wait for it to be caught in one of the errors?
+// NOTE: At some point should include a check that the directory is git-managed, or just wait for it to be caught in one of the errors?
 
-func RecycleFiles(delete_list []string, cwd, recycle_dir string) error {
+func RecycleFiles(delete_list []string, cwd, recycle_dir string, skip_recycle bool) error {
+	if skip_recycle {
+		fmt.Println("Recycling/file deletion skipped.")
+		return nil
+	}
 	recycle_dir = fp.Dir(recycle_dir)
 	stemming_path := fp.Dir(cwd)
 	for _, src_path := range delete_list {

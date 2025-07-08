@@ -38,7 +38,6 @@ func GetGitBranch(gitter GitOpsDriver) (string, error) {
 
 // Retrieve list of all git-stored files with an error in case this operation fails
 func GetGitTrackedFiles(gitter GitOpsDriver, branch string) ([]string, error) {
-	// git_ls := exec.Command("git", "ls-tree", "-r", git_branch, "--name-only")
 	ls_cmd_str := []string{"git", "ls-files"}
 	raw_out, ls_err := gitter.RunGit(ls_cmd_str)
 	if ls_err != nil {
@@ -131,6 +130,16 @@ func (d *GitRefreshDriver) DeltaAction() error {
 func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 	git_dir := git_refresh.GitDir
 	recycle_bin := git_refresh.RecycleBin
+	recycle_err := recycleSetup(recycle_bin)
+	if recycle_err != nil {
+		fmt.Println(
+			"Error when setting up recycle bin at ",
+			recycle_bin,
+			":\n",
+			recycle_err,
+		)
+		return recycle_err
+	}
 
 	////// Retrieve git metadata
 	git_branch, branch_err := GetGitBranch(git_refresh.Git)
@@ -161,7 +170,6 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 	for _, git_file := range git_list {
 		fmt.Println(git_file)
 	}
-	//	fmt.Println(time.Now().Format("2006-01-02 15:04:05"))
 
 	dir_contents, walk_err := GetAllDirContents(git_dir)
 	if walk_err != nil {
@@ -175,14 +183,6 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 	if exempt_err != nil {
 		return exempt_err
 	}
-	// fmt.Println("Print exempt files")
-	// for _, name := range exempt_files {
-	// 	fmt.Println(name)
-	// }
-	// fmt.Println("Print exempt dirs")
-	// for _, name := range exempt_dirs {
-	// 	fmt.Println(name)
-	// }
 
 	// TODO: Remove
 	fmt.Println("Calculating deletion list")
@@ -192,14 +192,12 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 		return get_deletes_err
 	}
 
-	//	delete_list_check, _ := SaferGetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
-	//	fmt.Println("Correctness check: ", slices.Equal(delete_list, delete_list_check))
 	for _, file_name := range delete_list {
 		fmt.Println(file_name)
 	}
 
 	fmt.Fprintln(git_refresh.Writer, "Moving files to recycling bin...")
-	delete_err := RecycleFiles(delete_list, git_dir, recycle_bin)
+	delete_err := RecycleFiles(delete_list, git_dir, recycle_bin, git_refresh.Config.SkipRecycle)
 	if delete_err != nil {
 		return delete_err
 	}

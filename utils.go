@@ -1,6 +1,28 @@
 package main
 
-import "errors"
+import (
+	"errors"
+	"io"
+)
+
+type ChannelWriter struct {
+	sender chan<- string
+}
+
+func (l ChannelWriter) Write(p []byte) (n int, err error) {
+	l.sender <- string(p)
+	return 0, nil
+}
+
+func CreateChannelWriter(sender chan<- string) io.Writer {
+	return ChannelWriter{sender: sender}
+}
+
+func LogRoutine(writer io.Writer, rcv <-chan string) {
+	for log := range rcv {
+		writer.Write([]byte(log))
+	}
+}
 
 type Optional[T any] struct {
 	inner   T

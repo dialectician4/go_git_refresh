@@ -22,6 +22,7 @@ type RefreshCLI struct {
 	Propagate          bool
 	ExemptionsSrc      string
 	Pull               bool
+	SkipRecycle        bool
 }
 
 // Function to instantiate CLIConfig with program-specific defaults
@@ -31,7 +32,7 @@ func DefaultRefreshCLI() RefreshCLI {
 
 // Generate literal containing valid enumerated program options/flags (options not taking values)
 func (r *RefreshCLI) ToNonInputOptions() []string {
-	output := []string{"--propagate", "-p", "--pull", "--no-pull", "-gp", "-ngp"}
+	output := []string{"--propagate", "-p", "--pull", "--no-pull", "-gp", "-ngp", "--skip", "-s"}
 	return output
 }
 
@@ -47,6 +48,8 @@ func (r *RefreshCLI) FromNonInputList(flags []string) error {
 			r.Pull = true
 		case "--no-pull", "-ngp":
 			r.Pull = false
+		case "--skip", "-s":
+			r.SkipRecycle = true
 		default:
 			return errors.New(fmt.Sprintln("Flag not recognized: ", flag))
 		}
