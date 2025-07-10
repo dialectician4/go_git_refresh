@@ -176,6 +176,9 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 		fmt.Fprintln(git_refresh.Writer, "Error when generating list of directory contents.")
 		return walk_err
 	}
+	for i := range 2 {
+		fmt.Println("Dir samples", dir_contents[i])
+	}
 
 	exemption_path := fp.Join(git_dir, ".gitrefresh")
 	fmt.Fprintln(git_refresh.Writer, "Generating git refresh exemption list...")

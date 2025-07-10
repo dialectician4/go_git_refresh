@@ -1,8 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"os/exec"
+
 	// "io"
 	"io"
 	"io/fs"
@@ -19,8 +22,8 @@ func main() {
 	logc := make(chan string, 10)
 	write_chan := CreateChannelWriter(logc)
 	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		wg.Add(1)
 		defer wg.Done()
 		LogRoutine(os.Stdout, logc)
 	}()
@@ -29,6 +32,26 @@ func main() {
 	close(logc)
 	wg.Wait()
 	os.Exit(exit_code)
+}
+
+func testGitDirCheck() {
+	cwd, _ := os.Getwd()
+	fmt.Println("Heres the cwd! ", cwd)
+	dir_contents, _ := GetNestedDirs(cwd)
+	fmt.Println("Here are all the dir contents!")
+	for _, path := range dir_contents {
+		fmt.Println(path)
+	}
+	r_git_repos := CheckGitDirs(dir_contents)
+	if r_git_repos.IsErr() {
+		panic(r_git_repos.Context("Failed finding git repos under cwd").UnwrapErr())
+	}
+	git_repos := r_git_repos.Unwrap()
+	fmt.Println("All the git repos: ")
+	for _, path := range git_repos {
+		fmt.Println(path)
+	}
+
 }
 
 func GitRefreshMain(logger io.Writer) int {
@@ -42,33 +65,31 @@ func GitRefreshMain(logger io.Writer) int {
 		fmt.Fprintln(git_refresh_writer, "Error when parsing input to git refresh:\n", config_err)
 		return 1
 	}
-	////// Setup git refresh recycling bin if not already setup
-	home, home_err := os.UserHomeDir()
-	if home_err != nil {
-		fmt.Fprintln(git_refresh_writer, "Error when retrieving home directory:\n", home_err)
-		return 1
+	git_refresh_targets := config.FindRefreshTargets()
+	if git_refresh_targets.IsErr() {
+		fmt.Fprintln(git_refresh_writer, git_refresh_targets.UnwrapErr())
 	}
-	// Create recycling directory if it does not exist
-	fmt.Println("Path: ", config.Path, ", Base of Path: ", fp.Base(config.Path))
-	fmt.Println("test base: ", fp.Base(`\projects\go\go_git_refresh`))
-	recycle_bin := fp.Join(home, ".git_refresh_rcycl", fp.Base(config.Path))
-	// recycle_err := recycleSetup(recycle_bin)
-	// if recycle_err != nil {
-	// 	fmt.Fprintln(
-	// 		git_refresh_writer,
-	// 		"Error when setting up recycle bin at ",
-	// 		recycle_bin,
-	// 		":\n",
-	// 		recycle_err,
-	// 	)
-	// 	return 1
-	// }
-	////// Generate driver for GitRefresh procedure
-	git_refresh_inst := CreateGitRefreshDriver(*config, git_refresh_writer, recycle_bin)
-	refresh_err := GitRefreshSingleRepo(git_refresh_inst)
-	if refresh_err != nil {
-		fmt.Fprintln(git_refresh_writer, "git refresh early termination due to the following error:", refresh_err)
-		return 1
+	refresh_list := git_refresh_targets.Unwrap()
+	for _, repo := range refresh_list {
+		go func() {
+			single_config := config.CloneWNewPath(repo)
+			////// Setup git refresh recycling bin if not already setup
+			home, home_err := os.UserHomeDir()
+			if home_err != nil {
+				fmt.Fprintln(git_refresh_writer, "Error when retrieving home directory:\n", home_err)
+				// return 1
+			}
+			// Create recycling directory if it does not exist
+			fmt.Println("Path: ", single_config.Path, ", Base of Path: ", fp.Base(single_config.Path))
+			fmt.Println("test base: ", fp.Base(`\projects\go\go_git_refresh`))
+			recycle_bin := fp.Join(home, ".git_refresh_rcycl", fp.Base(single_config.Path))
+			git_refresh_inst := CreateGitRefreshDriver(single_config, git_refresh_writer, recycle_bin)
+			refresh_err := GitRefreshSingleRepo(git_refresh_inst)
+			if refresh_err != nil {
+				fmt.Fprintln(git_refresh_writer, "git refresh early termination due to the following error:", refresh_err)
+				// return 1
+			}
+		}()
 	}
 
 	return 0
@@ -95,6 +116,31 @@ func CheckExit(err error) {
 	}
 }
 
+func GetNestedDirs(dir string) ([]string, error) {
+	var out_list []string
+	var walk_closure fs.WalkDirFunc
+	walk_closure = func(path string, info fs.DirEntry, err error) error {
+		if err != nil {
+			fmt.Printf("Failure accessing path %q: %v\n", path, err)
+			return err
+		}
+		if info.IsDir() {
+			abs_path, abs_err := fp.Abs(path)
+			if abs_err != nil {
+				return abs_err
+			}
+			out_list = append(out_list, abs_path)
+		}
+		return nil
+	}
+	walk_err := fp.WalkDir(
+		dir,
+		walk_closure,
+	)
+	return out_list, walk_err
+
+}
+
 // Returns absolute paths to all files in directory
 func GetAllDirContents(dir string) ([]string, error) {
 	var out_list []string
@@ -119,6 +165,74 @@ func GetAllDirContents(dir string) ([]string, error) {
 	)
 	return out_list, walk_err
 
+}
+
+// Filters slice of file paths and leaves only top-level git repo directories
+func CheckGitDirs(contents []string) Result[[]string] {
+	slices.SortFunc(
+		contents,
+		func(a, b string) int {
+			return cmp.Compare(len(a), len(b))
+		},
+	)
+
+	// TODO: Change this to Result[bool]?
+	git_repo_check := func(dir string) bool {
+		git_status := exec.Command("git", "status")
+		git_status.Dir = dir
+		git_output, _ := git_status.CombinedOutput()
+		output := string(git_output)
+		return strings.Contains(output, "On branch ")
+	}
+	repo_list := []string{}
+	path_ct := len(contents)
+	for range path_ct {
+		if len(contents) == 0 {
+			return Ok(repo_list)
+		}
+		path := contents[0]
+		status := git_repo_check(path)
+		if status {
+			repo_list = append(repo_list, path)
+			cleaned_subset := RemoveSubpaths(path, contents)
+			if cleaned_subset.IsErr() {
+				return *cleaned_subset.Context("Could not correctly purge subpaths under git repo")
+			}
+			contents = cleaned_subset.Unwrap()
+		} else {
+			contents = contents[1:]
+		}
+
+	}
+	return Ok(repo_list)
+
+}
+
+func RemoveSubpaths(parent string, path_list []string) Result[[]string] {
+	result := []string{}
+	for _, path := range path_list {
+		issubpath := IsSubPath(parent, path)
+		if issubpath.IsErr() {
+			return Transmute[bool, []string](issubpath)
+		}
+		if !issubpath.Unwrap() {
+			result = append(result, path)
+		}
+	}
+	return Ok(result)
+}
+
+func IsSubPath(parent, sub string) Result[bool] {
+	up := ".." + string(os.PathSeparator)
+	rel, err := fp.Rel(parent, sub)
+	if err != nil {
+		rerr := Err[bool](err)
+		return *rerr.Context(
+			"Error resolving file paths between " + parent + " and " + sub,
+		)
+	}
+	issubpath := !strings.HasPrefix(rel, up) && rel != ".."
+	return Ok(issubpath)
 }
 
 func GetDeletionList(all_files, git_files, exempt_files, exempt_dirs []string) ([]string, error) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -94,6 +95,7 @@ func AsErrResult(err error) ErrResult {
 	return ErrResult{inner: NewEmpty(), err: err}
 }
 
+// TODO: Add Either(Left | Right) variant
 type Result[T any] struct {
 	inner T
 	err   error
@@ -122,8 +124,16 @@ func (r *Result[T]) Unwrap() T {
 	return r.inner
 }
 
+func (r *Result[T]) UnwrapErr() error {
+	return r.err
+}
+
 func (r *Result[T]) Destructure() (T, error) {
 	return r.inner, r.err
+}
+
+func Transmute[T, G any](r Result[T]) Result[G] {
+	return Err[G](r.err)
 }
 
 func MapRes[T, G any](r Result[T], fn func(T) G) Result[G] {
@@ -138,4 +148,9 @@ func FlatMapRes[T, G any](r Result[T], fn func(T) Result[G]) Result[G] {
 		return Err[G](r.err)
 	}
 	return fn(r.inner)
+}
+
+func (r *Result[T]) Context(ctx string) *Result[T] {
+	r.err = fmt.Errorf(ctx+" (error: %w)", r.err)
+	return r
 }

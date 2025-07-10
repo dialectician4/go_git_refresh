@@ -57,6 +57,20 @@ func (r *RefreshCLI) FromNonInputList(flags []string) error {
 	return nil
 }
 
+func (r *RefreshCLI) FindRefreshTargets() Result[[]string] {
+	if r.Propagate {
+		nested_dirs, _ := GetNestedDirs(r.Path)
+		r_git_repos := CheckGitDirs(nested_dirs)
+		return *r_git_repos.Context("Error while propagating git refresh")
+	} else {
+		return Ok([]string{r.Path})
+	}
+}
+
+func (r *RefreshCLI) CloneWNewPath(new_path string) RefreshCLI {
+	return RefreshCLI{Path: new_path, TrackedFilesAction: r.TrackedFilesAction, Propagate: r.Propagate, ExemptionsSrc: r.ExemptionsSrc, Pull: r.Pull, SkipRecycle: r.SkipRecycle}
+}
+
 // Set RefreshCLI mode for handling deltas to git-tracked files.
 func deltaParse(s string) (string, error) {
 	opt_mapping := map[string]string{
