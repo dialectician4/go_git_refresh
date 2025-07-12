@@ -34,65 +34,77 @@ func main() {
 	os.Exit(exit_code)
 }
 
-func testGitDirCheck() {
-	cwd, _ := os.Getwd()
-	fmt.Println("Heres the cwd! ", cwd)
-	dir_contents, _ := GetNestedDirs(cwd)
-	fmt.Println("Here are all the dir contents!")
-	for _, path := range dir_contents {
-		fmt.Println(path)
-	}
-	r_git_repos := CheckGitDirs(dir_contents)
-	if r_git_repos.IsErr() {
-		panic(r_git_repos.Context("Failed finding git repos under cwd").UnwrapErr())
-	}
-	git_repos := r_git_repos.Unwrap()
-	fmt.Println("All the git repos: ")
-	for _, path := range git_repos {
-		fmt.Println(path)
-	}
-
-}
-
 func GitRefreshMain(logger io.Writer) int {
-	////// Get stdout as io writer
-	git_refresh_writer := logger
-	cli_args := GetCLIArgs()
-	fmt.Println(cli_args)
 	////// Get configurations for git refresh
 	config, config_err := GetGitRefreshConfig()
+	fmt.Fprintln(logger, "git refresh repos...")
 	if config_err != nil {
-		fmt.Fprintln(git_refresh_writer, "Error when parsing input to git refresh:\n", config_err)
+		fmt.Fprintln(logger, "Error when parsing input to git refresh:\n", config_err)
 		return 1
 	}
 	git_refresh_targets := config.FindRefreshTargets()
 	if git_refresh_targets.IsErr() {
-		fmt.Fprintln(git_refresh_writer, git_refresh_targets.UnwrapErr())
+		fmt.Fprintln(logger, git_refresh_targets.UnwrapErr())
+		return 1
 	}
 	refresh_list := git_refresh_targets.Unwrap()
-	for _, repo := range refresh_list {
+	////// Setup git refresh recycling bin if not already setup
+	home, home_err := os.UserHomeDir()
+	if home_err != nil {
+		fmt.Fprintln(logger, "Error when retrieving home directory:\n", home_err)
+		return 1
+	}
+
+	result_chan := make(chan RefreshResult, len(refresh_list))
+	var wg sync.WaitGroup
+	for i, repo := range refresh_list {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			single_config := config.CloneWNewPath(repo)
-			////// Setup git refresh recycling bin if not already setup
-			home, home_err := os.UserHomeDir()
-			if home_err != nil {
-				fmt.Fprintln(git_refresh_writer, "Error when retrieving home directory:\n", home_err)
-				// return 1
-			}
-			// Create recycling directory if it does not exist
-			fmt.Println("Path: ", single_config.Path, ", Base of Path: ", fp.Base(single_config.Path))
-			fmt.Println("test base: ", fp.Base(`\projects\go\go_git_refresh`))
 			recycle_bin := fp.Join(home, ".git_refresh_rcycl", fp.Base(single_config.Path))
-			git_refresh_inst := CreateGitRefreshDriver(single_config, git_refresh_writer, recycle_bin)
+			git_refresh_inst := CreateGitRefreshDriver(single_config, logger, recycle_bin, i)
 			refresh_err := GitRefreshSingleRepo(git_refresh_inst)
-			if refresh_err != nil {
-				fmt.Fprintln(git_refresh_writer, "git refresh early termination due to the following error:", refresh_err)
-				// return 1
-			}
+			refresh_result := AsRefreshResult(repo, refresh_err)
+			result_chan <- refresh_result
 		}()
 	}
 
-	return 0
+	result_list := make([]RefreshResult, len(refresh_list))
+
+	wg.Wait()
+	errors := 0
+	for range len(refresh_list) {
+		result := <-result_chan
+		result_name := result.Repo
+		success := !result.Res.IsErr()
+		result_list = append(result_list, result)
+		if success {
+			fmt.Fprintln(logger, "Repo ", result_name, " refreshed successfully")
+		} else {
+			errors += 1
+			fmt.Fprintln(
+				logger, "Repo ", result_name,
+				" failed to refresh: error ", result.Res.UnwrapErr())
+		}
+	}
+
+	if errors == 0 {
+		fmt.Fprintln(logger, "All repos refreshed successfully!")
+		return 0
+	} else {
+		fmt.Fprintln(logger, "Failed to refresh", errors, "repos.")
+		return 1
+	}
+}
+
+type RefreshResult struct {
+	Repo string
+	Res  Result[Empty]
+}
+
+func AsRefreshResult(name string, result error) RefreshResult {
+	return RefreshResult{Res: Result[Empty]{err: result}, Repo: name}
 }
 
 // Idempotent way of setting up the recycling directory if it does not exist.
@@ -106,14 +118,6 @@ func recycleSetup(recycle_dir string) error {
 		return mkdir_err
 	}
 	return recycle_dir_err
-}
-
-// Simple command to Exit program if error is non-nil and print first
-func CheckExit(err error) {
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
 }
 
 func GetNestedDirs(dir string) ([]string, error) {
@@ -310,7 +314,9 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 	var exempt_dirs []string
 
 	data, read_err := os.ReadFile(exempts_file)
-	if read_err != nil {
+	if os.IsNotExist(read_err) {
+		return []string{}, []string{}, nil
+	} else if read_err != nil {
 		log.Println("Error reading exemption file ", exempts_file)
 		return exempt_files, exempt_dirs, read_err
 	}
@@ -361,9 +367,9 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 
 // NOTE: At some point should include a check that the directory is git-managed, or just wait for it to be caught in one of the errors?
 
-func RecycleFiles(delete_list []string, cwd, recycle_dir string, skip_recycle bool) error {
+func RecycleFiles(logger func(args ...any), delete_list []string, cwd, recycle_dir string, skip_recycle bool) error {
 	if skip_recycle {
-		fmt.Println("Recycling/file deletion skipped.")
+		logger("Recycling/file deletion skipped.")
 		return nil
 	}
 	recycle_dir = fp.Dir(recycle_dir)
@@ -374,7 +380,7 @@ func RecycleFiles(delete_list []string, cwd, recycle_dir string, skip_recycle bo
 			return stem_err
 		}
 		dst_path := fp.Join(recycle_dir, remainder)
-		fmt.Println("Target dir: ", fp.Dir(dst_path), " from path ", dst_path)
+		logger("Target dir: ", fp.Dir(dst_path), " from path ", dst_path)
 		mkdir_err := os.MkdirAll(fp.Dir(dst_path), 0755)
 		if mkdir_err != nil {
 			return mkdir_err

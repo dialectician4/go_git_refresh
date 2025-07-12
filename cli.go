@@ -68,7 +68,14 @@ func (r *RefreshCLI) FindRefreshTargets() Result[[]string] {
 }
 
 func (r *RefreshCLI) CloneWNewPath(new_path string) RefreshCLI {
-	return RefreshCLI{Path: new_path, TrackedFilesAction: r.TrackedFilesAction, Propagate: r.Propagate, ExemptionsSrc: r.ExemptionsSrc, Pull: r.Pull, SkipRecycle: r.SkipRecycle}
+	return RefreshCLI{
+		Path:               new_path,
+		TrackedFilesAction: r.TrackedFilesAction,
+		Propagate:          r.Propagate,
+		ExemptionsSrc:      r.ExemptionsSrc,
+		Pull:               r.Pull,
+		SkipRecycle:        r.SkipRecycle,
+	}
 }
 
 // Set RefreshCLI mode for handling deltas to git-tracked files.
@@ -159,8 +166,6 @@ func ParseArgs(args []string, config CLIConfig) ([]string, map[string]string, er
 		}
 	}
 
-	fmt.Println("Noninputs: ", noninput_vals)
-
 	// Split any options on = which were concatenated with their value
 	split_remainders := []string{}
 	for _, arg := range remainders {
@@ -171,7 +176,6 @@ func ParseArgs(args []string, config CLIConfig) ([]string, map[string]string, er
 			split_remainders = append(split_remainders, arg)
 		}
 	}
-	fmt.Println("split remainders: ", split_remainders)
 
 	interactive_map, interact_parse_err := ParseInteractiveOptionsWPath(split_remainders, interactive_map)
 	if interact_parse_err != nil {
@@ -270,7 +274,6 @@ func (c *RefreshCLI) ApplyCLIInputs(noninput_vals []string, interactive_map map[
 
 func GetCLIArgs() []string {
 	args := os.Args[1:]
-	fmt.Println("cli inputs: ", args)
 	return args
 }
 

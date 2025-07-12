@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 )
 
 type ChannelWriter struct {
@@ -151,6 +152,34 @@ func FlatMapRes[T, G any](r Result[T], fn func(T) Result[G]) Result[G] {
 }
 
 func (r *Result[T]) Context(ctx string) *Result[T] {
+	if r.IsOk() {
+		return r
+	}
 	r.err = fmt.Errorf(ctx+" (error: %w)", r.err)
 	return r
+}
+
+func Ternary[T any](cond bool, r1, r2 T) T {
+	if cond {
+		return r1
+	}
+	return r2
+}
+
+func TerminalColors(n int) (string, string) {
+	if len(os.Getenv("NO_COLOR")) != 0 {
+		return "", ""
+	}
+	ColorMap := map[int]string{
+		0: "\033[0m",  // Reset
+		1: "\033[31m", // Red
+		2: "\033[32m", // Green
+		3: "\033[33m", // Yellow
+		4: "\033[34m", // Blue
+		5: "\033[35m", // Magenta
+		6: "\033[36m", // Cyan
+	}
+	AvailColors := len(ColorMap) - 2
+	color_choice := n%AvailColors + 2
+	return ColorMap[color_choice], ColorMap[0]
 }
