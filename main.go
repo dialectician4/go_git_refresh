@@ -4,13 +4,11 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"os/exec"
-
-	// "io"
 	"io"
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	fp "path/filepath"
 	"slices"
 	"strings"
@@ -307,7 +305,7 @@ func SaferGetDeletionList(all_files, git_files, exempt_files, exempt_dirs []stri
 // Given .gitrefresh path, returns
 // exempt files list, exempt directories list, and a (nil) error
 // All file paths in both lists are absolute
-func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
+func GetRefreshExemptions(repo string, exempts_file string) ([]string, []string, error) {
 	// TODO: Include separate logic for exemptions in .gitignore
 	// Currently only implement for separate .git_refresh file
 	var exempt_files []string
@@ -338,11 +336,7 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 			continue
 		}
 
-		abs_path, abs_err := fp.Abs(trim_path)
-		if abs_err != nil {
-			log.Println("Error resolving absolute path for ", trim_path)
-			return exempt_files, exempt_dirs, abs_err
-		}
+		abs_path := fp.Join(repo, trim_path)
 		pathInfo, path_err := os.Stat(abs_path)
 		if errors.Is(path_err, os.ErrNotExist) {
 			continue
@@ -365,13 +359,7 @@ func GetRefreshExemptions(exempts_file string) ([]string, []string, error) {
 
 }
 
-// NOTE: At some point should include a check that the directory is git-managed, or just wait for it to be caught in one of the errors?
-
-func RecycleFiles(logger func(args ...any), delete_list []string, cwd, recycle_dir string, skip_recycle bool) error {
-	if skip_recycle {
-		logger("Recycling/file deletion skipped.")
-		return nil
-	}
+func RecycleFiles(logger func(args ...any), delete_list []string, cwd, recycle_dir string) error {
 	recycle_dir = fp.Dir(recycle_dir)
 	stemming_path := fp.Dir(cwd)
 	for _, src_path := range delete_list {

@@ -4,13 +4,19 @@ git refresh is a git plugin which allows you to simultaneously remove
 untracked files from your repository and pull from git to help
 synchronize the state of your repo with remote.
 
+git refresh allows you to configure how exactly to execute the refresh:
+whether to pull latest updates or not, whether to stash, restore, or
+leave deltas to git-tracked files untouched, whether to not delete files
+at all, or even whether to apply git refresh on all nested sub-directories!
+Uses goroutines to parallelize execution on subdirectories.
+
 ### Why git refresh?
 Have you ever worked on a project where one process or another generates
-a variety of cache files for some purpose or another? And you leave
-these files be until some result starts differing between 2 peoples'
-machines and someone says "It works on my machine?" I've seen this
-happen and the issue persists until someone deletes their repo altogether
-and reclones and the issue is revealed to lie in caches or other non-git
+a variety of cache files or otherwise changes your state? And you leave
+these files be until 2 people start getting different results on some
+test and you hear "It works on my machine?" I've seen this happen and the
+issue persists until someone deletes their repo altogether and reclones
+and the issue is revealed to lie in caches or other non-git
 tracked files.
 
 git refresh aims to be a user-friendly tool to get your repo synchronized
@@ -23,7 +29,7 @@ For maximum safety, git refresh generates a "recycle bin" directory
 in your root and moves untracked files to said recycle bin instead of
 actually deleting in the event that you need to recover any of these
 files. refresh is configurable to stash (default) or restore any changes
-to tracked files for maximum control. You can also exclude certain
+to git-tracked files for maximum control. You can also exclude certain
 files or directories from the untracked clean up by including them
 in a ".gitrefresh" file in your directory to avoid removing key
 files or directories (credentials, node_modules, etc).
@@ -69,14 +75,31 @@ $ git refresh .
     restore-and-pull, no-pull)
     - Disposed of files sent to root-path recycle bin automatically
     (recycle bin overwritten with each git refresh)
+    - Pass -s as a no-delete option in the event you only want to
+    update repos but not impact non-git files
+    - pass -p or --propagate to find all git repos underneath
+    the given directory and executes git-refresh on each with
+    the same CLI configurations you initially passed
+        - ex: If you have an all-encompassing projects/ directory
+        and want to pull on all of them but not delete any files,
+        you can go to projects/ and run git refresh -s -p 
+        (propagates to subdirectories -p but does not delete files -s)
 - Future Goals
     - Tighter integration with .gitignore - add your .gitrefresh
     exceptions to your .gitignore instead of as a separate file
         - Flag individual .gitignore entries using a # comment
-    - Add option for recursively executing git refresh on git-tracked
-    repos nested below the given path
 
-
-
-
-
+### Notes
+- This specific implementation of git refresh is built as a training
+  exercise to learn Go. This project is std library-only/relies on
+  no third party dependencies besides testing. A second version of
+  git refresh would likely use a standard CLI-parsing library like 
+  standard library's flag or pflag or cobra.
+- Learning project highlights:
+    - Uses goroutines for blazingly fast parallel execution across
+      multiple repos with -p flag.
+    - Uses channels to collect logs from across goroutines and
+      sends them to a dedicated goroutine for writing to standard out
+      safely.
+    - Manually parses CLI flags without any further tools. More flexible
+      than std/flag.

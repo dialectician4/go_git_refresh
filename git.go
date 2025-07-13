@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+// Interface encapsulating execution of git commands
+// returning some output
 type GitOpsDriver interface {
 	RunGit(command []string) (string, error)
 }
@@ -37,7 +39,7 @@ func GetGitBranch(gitter GitOpsDriver) (string, error) {
 }
 
 // Retrieve list of all git-stored files with an error in case this operation fails
-func GetGitTrackedFiles(gitter GitOpsDriver, branch string) ([]string, error) {
+func GetGitTrackedFiles(repo string, gitter GitOpsDriver, branch string) ([]string, error) {
 	ls_cmd_str := []string{"git", "ls-files"}
 	raw_out, ls_err := gitter.RunGit(ls_cmd_str)
 	if ls_err != nil {
@@ -46,16 +48,16 @@ func GetGitTrackedFiles(gitter GitOpsDriver, branch string) ([]string, error) {
 	git_tracked_files := strings.Split(string(raw_out), "\n")
 	var git_list []string
 	for _, file_name := range git_tracked_files {
-		abs_path, abs_err := fp.Abs(file_name)
-		if abs_err != nil {
-			return git_list, abs_err
-		}
+		abs_path := fp.Join(repo, file_name)
 		git_list = append(git_list, abs_path)
 	}
 	return git_list, ls_err
 }
 
+// Action on delta files (git-tracked files with changes)
 // Stash changes to git-tracked files
+// Local now returned to last git tracked state and
+// compatible with push while deltas stored safely in git stash
 func GitStash(gitter GitOpsDriver) error {
 	stash_msg := fmt.Sprintf(
 		"git refresh - stashing current edits to git-tracked files - %s",
@@ -67,12 +69,16 @@ func GitStash(gitter GitOpsDriver) error {
 	return stash_err
 }
 
+// Action on delta files (git-tracked files with changes)
+// Revert any changes up to the last (local) git commit state
 func GitRestore(gitter GitOpsDriver) error {
 	restore_cmd_str := []string{"git", "restore", "."}
 	_, restore_err := gitter.RunGit(restore_cmd_str)
 	return restore_err
 }
 
+// Pull git repo on same branch to ensure consistency between
+// local and remote (requires Stash or Restore on delta files)
 func GitPull(gitter GitOpsDriver) error {
 	pull_cmd_str := []string{"git", "pull"}
 	_, pull_err := gitter.RunGit(pull_cmd_str)
@@ -82,6 +88,8 @@ func GitPull(gitter GitOpsDriver) error {
 	return pull_err
 }
 
+// All-in-one config containing all the tools necessary to
+// execute main git refresh workload/logic
 type GitRefreshDriver struct {
 	Config     RefreshCLI
 	Git        GitOpsDriver
@@ -91,6 +99,8 @@ type GitRefreshDriver struct {
 	RepoNumber int
 }
 
+// Assembles various components into 1 complete
+// GitRefreshDriver to feed into git refresh workflow
 func CreateGitRefreshDriver(config RefreshCLI, writer io.Writer, recycle string, index int) GitRefreshDriver {
 	git_inst := GitDirDriver{config.Path}
 	return GitRefreshDriver{
@@ -103,6 +113,8 @@ func CreateGitRefreshDriver(config RefreshCLI, writer io.Writer, recycle string,
 	}
 }
 
+// Ties together config (RefreshCLI) with GitOpsDriver
+// and actual GitOps function (here GitPull)
 func (d *GitRefreshDriver) PullAction() error {
 	if d.Config.Pull {
 		return GitPull(d.Git)
@@ -110,6 +122,8 @@ func (d *GitRefreshDriver) PullAction() error {
 	return nil
 }
 
+// Ties together config (RefreshCLI) with GitOpsDriver
+// and selects appropriate GitOps command (stash, restore, or none)
 func (d *GitRefreshDriver) DeltaAction() error {
 	switch d.Config.TrackedFilesAction {
 	case "stash":
@@ -122,6 +136,9 @@ func (d *GitRefreshDriver) DeltaAction() error {
 	return nil
 }
 
+// Creates a closure similar to fmt.Println which prefixes all logs
+// with the name of the current git repo and wraps the remaining message in
+// colors to help differentiate between logs for each repo
 func (d *GitRefreshDriver) GetLogger() func(args ...any) {
 	repo_name := fp.Base(d.Config.Path)
 	color, stop := TerminalColors(d.RepoNumber)
@@ -154,7 +171,7 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 		return recycle_err
 	}
 
-	////// Retrieve git metadata
+	// Retrieve git metadata
 	git_branch, branch_err := GetGitBranch(git_refresh.Git)
 	if branch_err != nil {
 		return branch_err
@@ -162,7 +179,7 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 	// TODO: Add method to git_refresh to include verbosity in the operation
 	logger("Refresh operating on ", git_branch, " on path ", git_dir, "...")
 
-	// Operate on git-tracked files with a delta (non-op, restore, or stash)
+	// Operate on git-tracked files with a delta (actions: non-op, restore, or stash)
 	logger("Git action on delta files: ", git_refresh.Config.TrackedFilesAction)
 	delta_err := git_refresh.DeltaAction()
 	if delta_err != nil {
@@ -174,7 +191,7 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 	}
 
 	logger("Finding git-tracked files...")
-	git_list, ls_err := GetGitTrackedFiles(git_refresh.Git, git_branch)
+	git_list, ls_err := GetGitTrackedFiles(git_dir, git_refresh.Git, git_branch)
 	if ls_err != nil {
 		return ls_err
 	}
@@ -187,22 +204,29 @@ func GitRefreshSingleRepo(git_refresh GitRefreshDriver) error {
 
 	exemption_path := fp.Join(git_dir, ".gitrefresh")
 	logger("Generating git refresh exemption list...")
-	exempt_files, exempt_dirs, exempt_err := GetRefreshExemptions(exemption_path)
+	exempt_files, exempt_dirs, exempt_err := GetRefreshExemptions(git_dir, exemption_path)
 	if exempt_err != nil {
 		return exempt_err
 	}
 
+	// Remove git files and exemptions to find remaining directory contents to delete
 	delete_list, get_deletes_err := GetDeletionList(dir_contents, git_list, exempt_files, exempt_dirs)
 	if get_deletes_err != nil {
 		logger("Error when determining file deletion list.")
 		return get_deletes_err
 	}
+
 	logger("Found", len(delete_list), "files to delete")
 
 	logger("Moving files to recycling bin...")
-	delete_err := RecycleFiles(logger, delete_list, git_dir, recycle_bin, git_refresh.Config.SkipRecycle)
-	if delete_err != nil {
-		return delete_err
+
+	if git_refresh.Config.SkipRecycle {
+		logger("Recycling/file deletion skipped.")
+	} else {
+		delete_err := RecycleFiles(logger, delete_list, git_dir, recycle_bin)
+		if delete_err != nil {
+			return delete_err
+		}
 	}
 
 	is_pulling := Ternary(git_refresh.Config.Pull, "P", "Not p")

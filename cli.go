@@ -268,7 +268,7 @@ func (c *RefreshCLI) ApplyCLIInputs(noninput_vals []string, interactive_map map[
 }
 
 // TrackedFilesAction should be in ["stash", "restore", "null"] (default as stash)
-// Pull, Propagate should be T/F (defualtsa as T and F, respectively)
+// Pull, Propagate should be T/F (defaults as T and F, respectively)
 // ExemptionSrc should be ["(git)refresh", "(git)ignore"] (default as refresh)
 // Path should be interpretable as . or path (default as .)
 
@@ -277,8 +277,6 @@ func GetCLIArgs() []string {
 	return args
 }
 
-// TODO: Wrap all up into GetGitRefreshConfig() CLIConfig to get configuration at top level
-// TODO: Replace slice and maps equals checks with reflect.DeepEquals or some equivalent
 func GetGitRefreshConfig() (*RefreshCLI, error) {
 	args := GetCLIArgs()
 	program_config := DefaultRefreshCLI()
